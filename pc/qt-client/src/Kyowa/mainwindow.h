@@ -4,9 +4,8 @@
 #include <QMainWindow>
 #include <QTcpSocket>
 #include <QUdpSocket>
-#include <QAbstractSocket>
-#include <QNetworkDatagram>
-
+#include <QTimer>
+#include <QKeyEvent> // Improvement: Keyboard support
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
@@ -20,27 +19,41 @@ public:
     MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
 
-private slots:
-    // UI Event Slots
-    void onConnectButtonClicked();
-    void onCommandButtonClicked(); // Generic for movement
-    void onAutoModeToggled(bool checked);
+protected:
+    // Improvement: Key press events for WASD control
+    void keyPressEvent(QKeyEvent *event) override;
+    void keyReleaseEvent(QKeyEvent *event) override;
 
-    // TCP Networking Slots
+private slots:
+    // Network Slots
     void onTcpConnected();
     void onTcpDisconnected();
     void onTcpError(QAbstractSocket::SocketError socketError);
-
-    // UDP Networking Slots
     void onUdpDataReady();
+
+    // UI Slots
+    void onConnectButtonClicked();
+    void onAutoModeToggled(bool checked);
+
+    // Control Slots (Pressed/Released logic)
+    void onMovePressed();
+    void onMoveReleased();
+
+    // The Heartbeat Loop
+    void sendCurrentCommand();
 
 private:
     Ui::MainWindow *ui;
+    QTcpSocket *tcpSocket;
+    QUdpSocket *udpSocket;
+    QTimer *heartbeatTimer;
 
-    // Networking members
-    QTcpSocket* tcpSocket;
-    QUdpSocket* udpSocket;
+    // Robot State
+    double targetLeft = 0.0;
+    double targetRight = 0.0;
+    bool isAuto = false;
 
     void setupConnections();
+    void setLocalCommand(double left, double right);
 };
 #endif // MAINWINDOW_H
