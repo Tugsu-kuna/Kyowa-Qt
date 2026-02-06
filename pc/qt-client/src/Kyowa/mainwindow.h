@@ -36,7 +36,7 @@ private slots:
     void onMovePressed();
     void onMoveReleased();
 
-    // Camera Slots (NEW)
+    // Camera Slots
     void onCamSliderChanged();
 
     // Heartbeat
@@ -52,12 +52,16 @@ private:
     double targetLeft = 0.0;
     double targetRight = 0.0;
 
-    // Camera State (NEW)
+    // Camera State
     int camPan = 90;
     int camTilt = 90;
 
+    // Camera Limits
+    const int CAM_MIN = 15;
+    const int CAM_MAX = 165;
+
     void setupConnections();
     void setLocalCommand(double left, double right);
-    void sendCamCommand(); // Helper for camera
+    void sendCamCommand();
 };
 #endif // MAINWINDOW_H

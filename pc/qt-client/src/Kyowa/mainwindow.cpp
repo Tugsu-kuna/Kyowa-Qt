@@ -2,14 +2,16 @@
 #include "ui_mainwindow.h"
 #include <QDebug>
 #include <QNetworkDatagram>
-#include <QPixmap> // Required for image handling
+#include <QPixmap>
 
 // Configuration
 const int HEARTBEAT_INTERVAL_MS = 100;
 const double SPEED_FWD = 0.5;
 const double SPEED_TURN = 0.3;
-const int UDP_VIDEO_PORT = 8000; // Port to listen for video
-const int CAM_STEP = 5;          // Degrees to move per key press
+const int UDP_VIDEO_PORT = 8000;
+const int CAM_STEP = 15; // Kept your faster speed (15)
+const int CAM_MIN = 15;
+const int CAM_MAX = 165;
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -17,10 +19,25 @@ MainWindow::MainWindow(QWidget *parent)
 {
     ui->setupUi(this);
 
+    // --- 1. FIX FOCUS STEALING ---
+    // Prevent buttons/sliders from keeping focus after being clicked.
+    ui->panSlider->setFocusPolicy(Qt::NoFocus);
+    ui->tiltSlider->setFocusPolicy(Qt::NoFocus);
+    ui->checkAutoMode->setFocusPolicy(Qt::NoFocus);
+    ui->btnConnect->setFocusPolicy(Qt::NoFocus);
+
+    // Motor Buttons
+    ui->btnForward->setFocusPolicy(Qt::NoFocus);
+    ui->btnBackward->setFocusPolicy(Qt::NoFocus);
+    ui->btnLeft->setFocusPolicy(Qt::NoFocus);
+    ui->btnRight->setFocusPolicy(Qt::NoFocus);
+
+    // Note: We cannot set NoFocus on editIpAddress, otherwise you can't type in it!
+    // We handle that in onConnectButtonClicked instead.
+
     tcpSocket = new QTcpSocket(this);
     udpSocket = new QUdpSocket(this);
 
-    // 1. START LISTENING FOR VIDEO
     if (udpSocket->bind(QHostAddress::Any, UDP_VIDEO_PORT)) {
         qDebug() << "UDP Video Listener Active on Port" << UDP_VIDEO_PORT;
     } else {
@@ -30,19 +47,25 @@ MainWindow::MainWindow(QWidget *parent)
     heartbeatTimer = new QTimer(this);
     heartbeatTimer->setInterval(HEARTBEAT_INTERVAL_MS);
 
+    // Initialize State
+    camPan = 90;
+    camTilt = 90;
+
     // Initialize Sliders
-    ui->panSlider->setRange(15, 165);
-    ui->panSlider->setValue(90);
+    ui->panSlider->setRange(CAM_MIN, CAM_MAX);
+    ui->panSlider->setValue(camPan);
 
-    ui->tiltSlider->setRange(15, 165);
-    ui->tiltSlider->setValue(90);
+    ui->tiltSlider->setRange(CAM_MIN, CAM_MAX);
+    ui->tiltSlider->setValue(camTilt);
 
-    // Initialize Video Label (Visual Placeholder)
     ui->lblVideo->setText("WAITING FOR VIDEO...");
     ui->lblVideo->setStyleSheet("background-color: black; color: white;");
     ui->lblVideo->setAlignment(Qt::AlignCenter);
 
     setupConnections();
+
+    // Start with focus on the main window so keys work immediately
+    this->setFocus();
 }
 
 MainWindow::~MainWindow()
@@ -66,23 +89,21 @@ void MainWindow::setupConnections()
         connect(btn, &QPushButton::released, this, &MainWindow::onMoveReleased);
     }
 
+    // Slider User Interaction
     connect(ui->panSlider, &QSlider::valueChanged, this, &MainWindow::onCamSliderChanged);
     connect(ui->tiltSlider, &QSlider::valueChanged, this, &MainWindow::onCamSliderChanged);
 
     connect(heartbeatTimer, &QTimer::timeout, this, &MainWindow::sendCurrentCommand);
 }
 
-// --- VIDEO DISPLAY LOGIC ---
+// --- VIDEO ---
 void MainWindow::onUdpDataReady()
 {
     while (udpSocket->hasPendingDatagrams()) {
         QNetworkDatagram datagram = udpSocket->receiveDatagram();
         QByteArray data = datagram.data();
-
-        // Convert raw bytes to Image
         QPixmap pixmap;
         if (pixmap.loadFromData(data, "JPG")) {
-            // Scale to fit the label while keeping aspect ratio
             ui->lblVideo->setPixmap(pixmap.scaled(ui->lblVideo->size(),
                                                   Qt::KeepAspectRatio,
                                                   Qt::SmoothTransformation));
@@ -90,7 +111,7 @@ void MainWindow::onUdpDataReady()
     }
 }
 
-// --- CAMERA SLIDER LOGIC ---
+// --- SLIDERS ---
 void MainWindow::onCamSliderChanged()
 {
     camPan = ui->panSlider->value();
@@ -105,8 +126,15 @@ void MainWindow::sendCamCommand()
     tcpSocket->write(cmd.toUtf8());
 }
 
-// --- CONNECTION & MOTOR LOGIC ---
+// --- CONNECTION ---
 void MainWindow::onConnectButtonClicked() {
+    // 2. FORCE FOCUS AWAY FROM IP BOX
+    // When you click connect, we assume you are done typing.
+    // We clear focus from the text box and give it to the main window.
+    ui->editIpAddress->clearFocus();
+    ui->spinPort->clearFocus();
+    this->setFocus();
+
     if (tcpSocket->state() == QAbstractSocket::UnconnectedState) {
         tcpSocket->connectToHost(ui->editIpAddress->text(), ui->spinPort->value());
     } else {
@@ -118,6 +146,9 @@ void MainWindow::onTcpConnected() {
     ui->lblStatus->setText("Connected");
     ui->btnConnect->setText("Disconnect");
     heartbeatTimer->start();
+
+    // Ensure focus is on the window again just in case
+    this->setFocus();
 }
 
 void MainWindow::onTcpDisconnected() {
@@ -133,6 +164,7 @@ void MainWindow::onTcpError(QAbstractSocket::SocketError) {
     heartbeatTimer->stop();
 }
 
+// --- MOTOR LOGIC ---
 void MainWindow::onMovePressed() {
     QObject* senderObj = sender();
     if (senderObj == ui->btnForward) setLocalCommand(SPEED_FWD, SPEED_FWD);
@@ -162,40 +194,78 @@ void MainWindow::sendCurrentCommand() {
     tcpSocket->write(command.toUtf8());
 }
 
-// --- KEYBOARD CONTROLS (WASD + ARROWS) ---
+// --- KEYBOARD CONTROLS ---
 void MainWindow::keyPressEvent(QKeyEvent *event) {
-    if(event->isAutoRepeat()) return;
+
+    bool camChanged = false;
 
     switch(event->key()) {
-    // Motor Controls (WASD)
-    case Qt::Key_W: setLocalCommand(SPEED_FWD, SPEED_FWD); break;
-    case Qt::Key_S: setLocalCommand(-SPEED_FWD, -SPEED_FWD); break;
-    case Qt::Key_A: setLocalCommand(-SPEED_TURN, SPEED_TURN); break;
-    case Qt::Key_D: setLocalCommand(SPEED_TURN, -SPEED_TURN); break;
 
-    // Camera Controls (Arrow Keys)
-    // Directly updating the slider triggers onCamSliderChanged -> sendCamCommand
+    // MOTORS (WASD) - No AutoRepeat
+    case Qt::Key_W:
+        if(event->isAutoRepeat()) return;
+        setLocalCommand(SPEED_FWD, SPEED_FWD);
+        break;
+    case Qt::Key_S:
+        if(event->isAutoRepeat()) return;
+        setLocalCommand(-SPEED_FWD, -SPEED_FWD);
+        break;
+    case Qt::Key_A:
+        if(event->isAutoRepeat()) return;
+        setLocalCommand(-SPEED_TURN, SPEED_TURN);
+        break;
+    case Qt::Key_D:
+        if(event->isAutoRepeat()) return;
+        setLocalCommand(SPEED_TURN, -SPEED_TURN);
+        break;
+
+    // CAMERA (ARROWS) - Allow AutoRepeat
     case Qt::Key_Left:
-        ui->panSlider->setValue(ui->panSlider->value() + CAM_STEP);
+        camPan += CAM_STEP; // Check if this direction feels right, swap += and -= if needed
+        camChanged = true;
         break;
     case Qt::Key_Right:
-        ui->panSlider->setValue(ui->panSlider->value() - CAM_STEP);
+        camPan -= CAM_STEP;
+        camChanged = true;
         break;
     case Qt::Key_Up:
-        ui->tiltSlider->setValue(ui->tiltSlider->value() + CAM_STEP);
+        camTilt += CAM_STEP;
+        camChanged = true;
         break;
     case Qt::Key_Down:
-        ui->tiltSlider->setValue(ui->tiltSlider->value() - CAM_STEP);
+        camTilt -= CAM_STEP;
+        camChanged = true;
         break;
 
-    default: QMainWindow::keyPressEvent(event);
+    default:
+        QMainWindow::keyPressEvent(event);
+        return;
+    }
+
+    if (camChanged) {
+        // Clamp
+        if (camPan > CAM_MAX) camPan = CAM_MAX;
+        if (camPan < CAM_MIN) camPan = CAM_MIN;
+        if (camTilt > CAM_MAX) camTilt = CAM_MAX;
+        if (camTilt < CAM_MIN) camTilt = CAM_MIN;
+
+        // Send
+        sendCamCommand();
+
+        // Update Visuals (Blocked)
+        ui->panSlider->blockSignals(true);
+        ui->panSlider->setValue(camPan);
+        ui->panSlider->blockSignals(false);
+
+        ui->tiltSlider->blockSignals(true);
+        ui->tiltSlider->setValue(camTilt);
+        ui->tiltSlider->blockSignals(false);
     }
 }
 
 void MainWindow::keyReleaseEvent(QKeyEvent *event) {
     if(event->isAutoRepeat()) return;
 
-    // Only stop motors on WASD release
     if(event->key() == Qt::Key_W || event->key() == Qt::Key_S ||
         event->key() == Qt::Key_A || event->key() == Qt::Key_D) {
         setLocalCommand(0.0, 0.0);
@@ -203,5 +273,7 @@ void MainWindow::keyReleaseEvent(QKeyEvent *event) {
 }
 
 void MainWindow::onAutoModeToggled(bool checked) {
-    // Stub
+    if (tcpSocket->state() != QAbstractSocket::ConnectedState) return;
+    QString cmd = checked ? "SENTRY ON\n" : "SENTRY OFF\n";
+    tcpSocket->write(cmd.toUtf8());
 }
